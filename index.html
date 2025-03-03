@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Air Canvas</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #f0f0f0;
+            height: 100vh;
+        }
+        h1 {
+            margin: 20px 0;
+            color: #333;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            max-width: 800px;
+            width: 100%;
+        }
+        .canvas-container {
+            position: relative;
+            margin: 10px;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
+        #video, #canvas {
+            border-radius: 8px;
+        }
+        #video {
+            transform: scaleX(-1);
+            display: block;
+        }
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 10;
+        }
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin: 15px 0;
+            gap: 10px;
+        }
+        button {
+            background-color: #4285f4;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #3367d6;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .color-picker, .size-picker {
+            display: flex;
+            align-items: center;
+            margin: 0 5px;
+        }
+        .color-btn {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            margin: 0 5px;
+            cursor: pointer;
+            border: 2px solid transparent;
+        }
+        .color-btn.active {
+            border: 2px solid black;
+        }
+        .status {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 5px;
+            background-color: #e8f0fe;
+            color: #333;
+            text-align: center;
+        }
+        .loading {
+            display: none;
+            align-items: center;
+            justify-content: center;
+            margin: 20px 0;
+        }
+        .loading-spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-left: 4px solid #3498db;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <h1>AI Air Canvas</h1>
+    <div class="container">
+        <div class="status" id="status">Loading models...</div>
+        
+        <div class="loading" id="loading">
+            <div class="loading-spinner"></div>
+            <span>Loading models...</span>
+        </div>
+        
+        <div class="canvas-container">
+            <video id="video" width="640" height="480" autoplay></video>
+            <canvas id="canvas" width="640" height="480"></canvas>
+        </div>
+        
+        <div class="controls">
+            <button id="startBtn">Start Camera</button>
+            <button id="clearBtn" disabled>Clear Canvas</button>
+            <button id="toggleTrackingBtn" disabled>Pause Tracking</button>
+            <button id="saveBtn" disabled>Save Drawing</button>
+        </div>
+        
+        <div class="controls">
+            <div class="color-picker">
+                <span>Color:</span>
+                <div class="color-btn active" style="background-color: #ff0000;" data-color="#ff0000"></div>
+                <div class="color-btn" style="background-color: #00ff00;" data-color="#00ff00"></div>
+                <div class="color-btn" style="background-color: #0000ff;" data-color="#0000ff"></div>
+                <div class="color-btn" style="background-color: #ffff00;" data-color="#ffff00"></div>
+                <div class="color-btn" style="background-color: #ff00ff;" data-color="#ff00ff"></div>
+            </div>
+            <div class="size-picker">
+                <span>Size:</span>
+                <input type="range" id="sizeSlider" min="1" max="20" value="5">
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tensorflow/4.2.0/tf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tensorflow-models/handpose/0.0.7/handpose.min.js"></script>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const video = document.getElementById('video');
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            const startBtn = document.getElementById('startBtn');
+            const clearBtn = document.getElementById('clearBtn');
+            const toggleTrackingBtn = document.getElementById('toggleTrackingBtn');
+            const saveBtn = document.getElementById('saveBtn');
+            const statusElement = document.getElementById('status');
+            const loadingElement = document.getElementById('loading');
+            const sizeSlider = document.getElementById('sizeSlider');
+            
+            let handposeModel = null;
+            let isTracking = false;
+            let stream = null;
+            let trackingPaused = false;
+            let currentColor = '#ff0000';
+            let currentSize = 5;
+            let fingerPositions = [];
+            let isDrawing = false;
+            
+            // Set up color pickers
+            document.querySelectorAll('.color-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    currentColor = btn.dataset.color;
+                });
+            });
+            
+            // Set up size slider
+            sizeSlider.addEventListener('input', function() {
+                currentSize = parseInt(this.value);
+            });
+            
+            // Start button click handler
+            startBtn.addEventListener('click', async function() {
+                if (!stream) {
+                    try {
+                        statusElement.textContent = "Starting camera...";
+                        stream = await navigator.mediaDevices.getUserMedia({ 
+                            video: { width: 640, height: 480 } 
+                        });
+                        video.srcObject = stream;
+                        
+                        // Enable buttons
+                        clearBtn.disabled = false;
+                        toggleTrackingBtn.disabled = false;
+                        saveBtn.disabled = false;
+                        
+                        // Load handpose model
+                        statusElement.textContent = "Loading AI models...";
+                        loadingElement.style.display = "flex";
+                        
+                        try {
+                            handposeModel = await handpose.load();
+                            statusElement.textContent = "Models loaded! Raise your index finger to draw.";
+                            loadingElement.style.display = "none";
+                            
+                            startBtn.textContent = "Stop Camera";
+                            isTracking = true;
+                            trackHands();
+                        } catch (error) {
+                            console.error("Error loading the handpose model:", error);
+                            statusElement.textContent = "Failed to load AI models. Please try again.";
+                            loadingElement.style.display = "none";
+                        }
+                    } catch (error) {
+                        console.error("Error accessing the camera:", error);
+                        statusElement.textContent = "Unable to access camera. Please ensure camera permissions are granted.";
+                    }
+                } else {
+                    // Stop everything
+                    stopTracking();
+                    startBtn.textContent = "Start Camera";
+                    clearBtn.disabled = true;
+                    toggleTrackingBtn.disabled = true;
+                    saveBtn.disabled = true;
+                    statusElement.textContent = "Camera stopped.";
+                }
+            });
+            
+            // Clear button click handler
+            clearBtn.addEventListener('click', function() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                fingerPositions = [];
+            });
+            
+            // Toggle tracking button click handler
+            toggleTrackingBtn.addEventListener('click', function() {
+                trackingPaused = !trackingPaused;
+                
+                if (trackingPaused) {
+                    toggleTrackingBtn.textContent = "Resume Tracking";
+                    statusElement.textContent = "Tracking paused. Click 'Resume Tracking' to continue.";
+                } else {
+                    toggleTrackingBtn.textContent = "Pause Tracking";
+                    statusElement.textContent = "Tracking resumed. Raise your index finger to draw.";
+                }
+            });
+            
+            // Save button click handler
+            saveBtn.addEventListener('click', function() {
+                const link = document.createElement('a');
+                link.download = 'air-canvas-drawing.png';
+                link.href = canvas.toDataURL();
+                link.click();
+                statusElement.textContent = "Drawing saved!";
+                setTimeout(() => {
+                    statusElement.textContent = trackingPaused ? 
+                        "Tracking paused. Click 'Resume Tracking' to continue." : 
+                        "Raise your index finger to draw.";
+                }, 2000);
+            });
+            
+            // Track hands function
+            async function trackHands() {
+                if (!isTracking) return;
+                
+                if (!trackingPaused && handposeModel) {
+                    try {
+                        const predictions = await handposeModel.estimateHands(video);
+                        
+                        if (predictions.length > 0) {
+                            // Get index finger position
+                            const indexFinger = predictions[0].annotations.indexFinger[3];
+                            const thumbTip = predictions[0].annotations.thumb[3];
+                            
+                            // Calculate distance between index finger and thumb
+                            const distance = Math.sqrt(
+                                Math.pow(indexFinger[0] - thumbTip[0], 2) + 
+                                Math.pow(indexFinger[1] - thumbTip[1], 2)
+                            );
+                            
+                            // Check if fingers are close (pinching gesture)
+                            if (distance < 40) {
+                                if (!isDrawing) {
+                                    isDrawing = true;
+                                    fingerPositions.push(null); // Mark beginning of new line
+                                }
+                                
+                                // Adjust for mirrored video
+                                const x = canvas.width - indexFinger[0];
+                                const y = indexFinger[1];
+                                
+                                fingerPositions.push({ x, y, color: currentColor, size: currentSize });
+                                drawOnCanvas();
+                            } else {
+                                isDrawing = false;
+                            }
+                        }
+                    } catch (error) {
+                        console.error("Error during hand tracking:", error);
+                    }
+                }
+                
+                requestAnimationFrame(trackHands);
+            }
+            
+            // Draw on canvas
+            function drawOnCanvas() {
+                ctx.lineJoin = 'round';
+                ctx.lineCap = 'round';
+                
+                let lastPosition = null;
+                
+                for (let i = 0; i < fingerPositions.length; i++) {
+                    const position = fingerPositions[i];
+                    
+                    if (position === null) {
+                        // This is a new line marker
+                        lastPosition = null;
+                        continue;
+                    }
+                    
+                    if (lastPosition) {
+                        ctx.beginPath();
+                        ctx.strokeStyle = position.color;
+                        ctx.lineWidth = position.size;
+                        ctx.moveTo(lastPosition.x, lastPosition.y);
+                        ctx.lineTo(position.x, position.y);
+                        ctx.stroke();
+                    }
+                    
+                    lastPosition = position;
+                }
+            }
+            
+            // Stop tracking
+            function stopTracking() {
+                isTracking = false;
+                
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                    stream = null;
+                }
+                
+                video.srcObject = null;
+            }
+        });
+    </script>
+</body>
+</html>
